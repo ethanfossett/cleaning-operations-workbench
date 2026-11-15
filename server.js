@@ -9,7 +9,8 @@ import { seedDemo } from './demo.js';
 import { dollarsToCents, InputError, rateVersion } from './pricing.js';
 import { Conflict, NotFound, openRepository } from './repository.js';
 import {
-  bookingPage, recurringPage, cleanerPage, crewsPage, customerPage, directory, layout, quotePage, rateFormValues, ratesPage, schedulePage,
+  bookingPage, recurringPage, cleanerPage, crewsPage, customerPage, directory, invoicePage, invoicesPage, layout, quotePage, rateFormValues,
+  ratesPage, schedulePage,
   quotesPage, settingsPage, todayPage, SERVICE_LABELS,
 } from './views.js';
 
@@ -79,8 +80,11 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
       const record = repository.booking(id);
       const quote = repository.quote(record.quote_id);
       return html(status, bookingPage(record, quote, repository.customer(quote.customer_id),
-        repository.history(id), repository.bookingSite(id), recovery, repository.crews(), repository.acknowledgment(record)));
+        repository.history(id), repository.bookingSite(id), recovery, repository.crews(), repository.acknowledgment(record),
+        repository.invoiceForBooking(id)));
     };
+    const showInvoice = (id, status = 200, options = {}) => html(status,
+      invoicePage(repository.invoice(id), { today: easternDay(clock()), ...options }));
     try {
       const url = new URL(request.url, 'http://localhost');
       const path = url.pathname;
@@ -117,7 +121,8 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
       const customer = /^\/customers\/(\d+)(?:\/(quotes|edit))?$/.exec(path);
       const quote = /^\/quotes\/(\d+)(?:\/(revise|decision|book))?$/.exec(path);
       const recurring = /^\/quotes\/(\d+)\/recurring$/.exec(path);
-      const booking = /^\/bookings\/(\d+)(?:\/(reschedule|cancel|start|complete|interrupt))?$/.exec(path);
+      const booking = /^\/bookings\/(\d+)(?:\/(reschedule|cancel|start|complete|interrupt|invoice))?$/.exec(path);
+      const invoice = /^\/invoices\/(\d+)(?:\/(payment))?$/.exec(path);
       if (request.method === 'GET') {
         if (path === '/assets/app.css') {
           return response.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' }).end(stylesheet);
@@ -155,6 +160,23 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
         if (booking && !booking[2]) {
           return showBooking(Number(booking[1]));
         }
+        if (path === '/invoices') {
+          const query = (url.searchParams.get('q') ?? '').trim().slice(0, 80);
+          const status = url.searchParams.get('status') || 'all';
+          return html(200, invoicesPage(repository.invoices({ query, status }),
+            { query, status, total: repository.invoiceCount() }));
+        }
+        if (invoice && !invoice[2]) {
+          const id = Number(invoice[1]);
+          const paid = repository.invoice(id).status === 'paid';
+          // A notice is shown only if it still describes the invoice.
+          const notice = {
+            recorded: paid && 'Payment recorded. This invoice is paid in full.',
+            existing: paid && 'This payment was already recorded. No second payment was recorded.',
+          }[url.searchParams.get('payment')] || (url.searchParams.get('existing') === '1'
+            && 'This job was already invoiced, so no new invoice was created.') || '';
+          return showInvoice(id, 200, { notice });
+        }
         if (path === '/rates') {
           // A success notice is shown only if it still describes the current state.
           const version = url.searchParams.get('version');
@@ -173,7 +195,8 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
         }
         if (customer && !customer[2]) {
           const id = Number(customer[1]);
-          return html(200, customerPage(repository.customer(id), repository.customerQuotes(id), repository.customerBookings(id), repository.locations(id)));
+          return html(200, customerPage(repository.customer(id), repository.customerQuotes(id), repository.customerBookings(id),
+            repository.locations(id), repository.customerInvoices(id)));
         }
         if (quote && !quote[2]) {
           const record = repository.quote(Number(quote[1]));
@@ -264,6 +287,30 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
         }
         if (customer?.[2] === 'quotes') {
           return redirect('/quotes/' + repository.addQuote(Number(customer[1]), await form(request)));
+        }
+        if (invoice?.[2] === 'payment') {
+          const id = Number(invoice[1]);
+          const fields = await form(request);
+          let result;
+          try {
+            result = repository.recordPayment(id, fields, account?.name);
+          } catch (error) {
+            if (!(error instanceof InputError || error instanceof Conflict)) throw error;
+            return showInvoice(id, statusOf(error), { error: error.message, values: fields });
+          }
+          return redirect('/invoices/' + id + '?payment=' + (result.created ? 'recorded' : 'existing'));
+        }
+        if (booking?.[2] === 'invoice') {
+          const id = Number(booking[1]);
+          await form(request);
+          let result;
+          try {
+            result = repository.createInvoice(id, account?.name);
+          } catch (error) {
+            if (!(error instanceof Conflict)) throw error;
+            return showBooking(id, 409, { message: error.message });
+          }
+          return redirect('/invoices/' + result.id + (result.created ? '' : '?existing=1'));
         }
         if (booking?.[2]) {
           const id = Number(booking[1]);

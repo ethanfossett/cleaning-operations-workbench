@@ -54,6 +54,42 @@ when booked. Edits to a customer affect future bookings. Older bookings
 without a snapshot display current customer details with a clear label. Stale reschedule and cancel requests return
 a conflict. The app assumes a trusted local operator and uses sample data.
 
+## Invoicing completed jobs
+
+Open a completed booking and click **Create invoice** in the **Invoice** panel. The invoice copies the
+line items and total of the accepted quote revision, and the service location saved when the job was
+booked. Later rate changes or customer edits never change it. Invoices are numbered `INV-000001`,
+`INV-000002`, and so on, and open at `/invoices/ID`. The booking page links to its invoice.
+
+Only completed jobs can be invoiced: the server refuses scheduled, in-progress, cancelled, and stopped
+jobs, whatever the page shows. Each booking can have one invoice. Repeating the request opens the
+existing invoice instead of creating another, and the database rejects a second invoice for a
+booking. Each completed recurring visit is its own booking, so it gets its own invoice for the full
+accepted amount. Jobs completed before invoicing existed can be invoiced too; if such a booking has no
+saved site, the quote's service location is used. Saved invoices cannot be changed or deleted.
+
+Open **Invoices** to see every invoice, newest first, with its customer, job, service date, total,
+and payment status. Search by part of a customer name (as billed or as currently named) or an
+invoice number: `INV-000001`, `inv-1`, and `1` all find the first invoice. Use **All**, **Unpaid**,
+or **Paid** to filter; filters combine with the search. A search or filter with no results says so and offers a link back to all invoices.
+A customer's page lists that customer's invoices, and each invoiced job in **Booking history** links
+to its invoice. The booking page, customer page, and register all open the same invoice page.
+Run `npm run test:invoices` to run only the invoice and payment tests.
+
+### Recording payments
+
+Open an unpaid invoice, enter the date the payment was received (today or earlier, Eastern time),
+choose Cash, Check, Card, or Bank transfer, and click **Record full payment**. The payment is
+always the full invoice total and records the signed-in dispatcher. The invoice then shows as
+**Paid** on its page, in the register and its filters, in the customer's history, and on the
+booking. Payments are stored separately, so the invoice and its amounts never change.
+
+An invoice can be paid once. The server checks in the same transaction that saves the payment, so a
+page opened before someone else recorded the payment cannot add a second one; it shows the payment
+already recorded instead. Pressing the button twice with the same details just reopens the invoice.
+The database also rejects a second payment, any amount other than the full total, and any edit or
+deletion of a payment. Partial payments, refunds, and online payments are not supported.
+
 ## Quote expiration
 
 Each new revision is valid for 14 calendar days: a revision issued on an Eastern calendar date
@@ -93,6 +129,14 @@ the page explains what happened.
 - scheduling.js validates dates, start times, and durations.
 - expiration.js computes and formats the 14-day Eastern expiration of a revision. Expiration timestamps are stored in `revision_expirations`, written with each revision; the repository takes a `now` clock so tests can control time.
 - expiration.test.js covers expiration boundaries (including daylight-saving changes), historical compatibility, repeat decisions, revised quotes, and booking workflows.
+- invoices.js defines the write-once `invoices`, `invoice_lines`, and `invoice_payments` tables (one invoice per booking, one full payment per invoice), checks that an accepted estimate can be billed exactly, and validates payment details. repository.js `createInvoice` checks completion and writes the invoice in one transaction.
+- invoices.test.js covers invoice contents, refusal of unfinished jobs, one invoice per booking (two dispatchers pressing at once, concurrent app processes, and direct database writes), recurring visits, older databases, and the HTTP pages and access rules.
+- invoice-register.test.js covers the register: listing, search by customer name and invoice number, paid and unpaid filters, empty results, customer history links, and access rules.
+- payments.test.js covers recording full payments, paid status everywhere, validation, one payment per invoice (outdated pages, double clicks, two dispatchers, concurrent processes, and direct database writes), older databases, and access rules.
+- payments-stress.test.js stress-tests payments and filters: 40 mixed invoices checked against every search and filter, 60 simultaneous requests on one invoice, several app processes at once, repeated and altered submissions.
+- permissions.test.js sends requests straight to the server: cleaners and signed-out visitors cannot view, create, or pay invoices by any route or method; scheduled, in-progress, cancelled, and stopped jobs (including recurring visits) cannot be invoiced; completed, invoiced jobs cannot be undone; bad ids are "not found".
+- recurring-pricing.test.js covers, through the app's pages, separate invoices for each completed recurring visit (including simultaneous and rescheduled visits), and shows that publishing, activating, or switching back rates never changes accepted quotes, booking prices, invoices, or payments, while new quotes use the new rates.
+- persistence.test.js starts the real app (`node server.js` with `AYC_DATABASE` and `AYC_DISPATCHER_PASSWORD`) as separate processes on a persistent database with fictional data: invoices and payments survive a normal stop, a crash right after a payment, and a backup and restore, and the one-invoice and one-payment rules still apply afterwards.
 - recurrence.js computes visit dates for weekly, biweekly and monthly plans.
 - staff.js handles local staff accounts and sessions. server.js enforces route access and crew scope.
 - backup.js creates and checks SQLite copies for backup and restore.

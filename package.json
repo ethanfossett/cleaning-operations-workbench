@@ -4,5 +4,9 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.21" },
-  "scripts": { "start": "node server.js", "test": "node --test" }
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "test:invoices": "node --test invoices.test.js invoice-register.test.js payments.test.js payments-stress.test.js permissions.test.js recurring-pricing.test.js persistence.test.js"
+  }
 }

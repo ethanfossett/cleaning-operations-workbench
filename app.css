@@ -19,3 +19,7 @@ button{background:var(--brand);color:white;border-color:var(--brand);cursor:poin
 li{margin:.55rem 0}.tag{display:inline-block;background:#e3f0eb;padding:.16rem .48rem;border-radius:.35rem;font-size:.84rem}
 .muted{color:#4a635e}.notes{white-space:pre-wrap;overflow-wrap:anywhere}
 :focus-visible{outline:3px solid #b36819;outline-offset:3px}
+.lines{border-collapse:collapse;background:white;width:min(100%,35rem);margin:1rem 0}
+.lines th,.lines td{border:1px solid var(--border);padding:.5rem .75rem;text-align:left}
+.lines .amount{text-align:right}
+.register{width:100%}

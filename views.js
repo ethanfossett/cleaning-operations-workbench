@@ -1,4 +1,5 @@
 import { formatEastern, isExpired } from './expiration.js';
+import { PAYMENT_METHODS } from './invoices.js';
 
 const escape = value => String(value).replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -14,7 +15,7 @@ export function layout(title, content, { restricted = false } = {}) {
   <title>${escape(title)} · AYC Operations</title>
   <link rel="stylesheet" href="/assets/app.css">
   ${restricted ? '<header><strong>AYC Operations</strong></header>' : `<header><a class="brand" href="/today">AYC Operations</a><nav aria-label="Main navigation">
-    <a href="/today">Today</a><a href="/customers">Customers</a><a href="/quotes">Quotes</a>
+    <a href="/today">Today</a><a href="/customers">Customers</a><a href="/quotes">Quotes</a><a href="/invoices">Invoices</a>
     <a href="/schedule">Schedule</a><a href="/crews">Crews</a><a href="/cleaner">Cleaner</a><a href="/settings">Settings</a>
   </nav><form method="post" action="/logout"><button>Sign out</button></form></header>`}
   <main><h1>${escape(title)}</h1>${content}</main></html>`;
@@ -55,7 +56,7 @@ function locationForm(customerId, location) {
     <button>${location ? 'Save location' : 'Add location'}</button></form>`;
 }
 
-export function customerPage(customer, quotes, bookings = [], locations = []) {
+export function customerPage(customer, quotes, bookings = [], locations = [], invoices = []) {
   const rows = quotes.map(quote => `<li><a href="/quotes/${quote.id}">${escape(quote.title)}</a>
     · ${escape(quote.status)} · Revision ${quote.current_revision}</li>`).join('');
   return layout(customer.name, `<p>Site reference: ${escape(customer.reference)}</p>
@@ -70,6 +71,7 @@ export function customerPage(customer, quotes, bookings = [], locations = []) {
     <label>Service notes <textarea name="notes" maxlength="500">${escape(customer.service_notes ?? '')}</textarea></label>
     <button>Save customer details</button></form></details></section>
     <section class="panel"><h2>Booking history</h2>${jobList(bookings)}</section></div>
+    <h2>Invoices</h2>${invoices.length ? invoiceTable(invoices, { showCustomer: false }) : '<p>No invoices yet.</p>'}
     <h2>Quote history</h2>${rows ? `<ul>${rows}</ul>` : '<p>No quotes yet.</p>'}
     <h2>Service locations</h2>
     ${locations.map(location => `<details><summary>${escape(location.reference)}${location.is_default ? ' · Default' : ''}</summary>
@@ -163,7 +165,20 @@ export function schedulePage(day, bookings, week = [], crews = []) {
 
 }
 
-export function bookingPage(booking, quote, customer, history = [], site, recovery, crews = [], acknowledgment) {
+// The booking's invoice panel. The server refuses to invoice a job that is not completed; hiding the
+// button here only keeps the page tidy.
+function invoiceSection(booking, invoice, estimate, revision) {
+  if (invoice) {
+    return `<section class="panel"><h2>Invoice</h2><p><a href="/invoices/${invoice.id}">${escape(invoice.number)}</a>
+      · ${money(invoice.total_cents)} · ${invoiceStatus(invoice)}</p></section>`;
+  }
+  if (booking.job_state !== 'completed') return '';
+  return `<section class="panel"><h2>Invoice</h2><p>Not invoiced yet. The invoice bills ${money(estimate.totalCents)}
+    from accepted quote revision ${revision}.</p><form method="post" action="/bookings/${booking.id}/invoice">
+    <button>Create invoice</button></form></section>`;
+}
+
+export function bookingPage(booking, quote, customer, history = [], site, recovery, crews = [], acknowledgment, invoice) {
   const version = `<input type="hidden" name="version" value="${booking.version}">`;
   const actions = booking.job_state === 'scheduled' ? `
     <form method="post" action="/bookings/${booking.id}/reschedule">
@@ -192,10 +207,53 @@ export function bookingPage(booking, quote, customer, history = [], site, recove
     <p class="muted">${site ? 'Saved at booking.' : 'Current customer details. This older job has no saved site snapshot.'}</p>
     <p class="notes">${escape((site ?? customer).access_notes || 'No access instructions.')}</p>
     <p class="notes">${escape((site ?? customer).service_notes || 'No service notes.')}</p></section></div>
-    ${bookingError(recovery)}${actions}<h2>Job history</h2>${history.length ? `<ul>${history.map(item => `<li>
+    ${bookingError(recovery)}${actions}${invoiceSection(booking, invoice, estimate, quote.decision.revision)}<h2>Job history</h2>${history.length ? `<ul>${history.map(item => `<li>
       <strong>${escape(item.kind)}</strong> · ${escape(formatEastern(item.occurred_at))}
       ${item.detail ? `<p class="notes">${escape(item.detail)}</p>` : ''}</li>`).join('')}</ul>`
       : '<p>No events recorded for this booking.</p>'}`);
+}
+
+// The payment panel: the recorded payment, or the form to record one. The server refuses a second
+// payment whatever this page showed when it was loaded.
+function paymentSection(invoice, { error = '', values = {}, today = '' }) {
+  const alert = error ? `<p role="alert">${escape(error)}</p>` : '';
+  if (invoice.status === 'paid') {
+    return `<section class="panel"><h2>Payment</h2>${alert}<p><strong>Paid in full</strong> · ${money(invoice.paid_cents)}
+      · ${escape(PAYMENT_METHODS[invoice.payment_method] ?? invoice.payment_method)} · received ${escape(invoice.paid_on)}</p>
+      <p class="muted">Recorded by ${escape(invoice.payment_recorded_by)} · ${escape(formatEastern(invoice.payment_recorded_at))}</p></section>`;
+  }
+  const method = values.method ?? '';
+  return `<section class="panel"><h2>Record payment</h2>${alert}
+    <p>Record a full payment of ${money(invoice.total_cents)}. The invoice total does not change.</p>
+    <form method="post" action="/invoices/${invoice.id}/payment">
+    <label>Date received <input type="date" name="paidOn" required max="${escape(today)}"
+      value="${escape(values.paidOn ?? today)}"></label>
+    <label>Payment method <select name="method" required><option value="">Choose a method</option>${
+      Object.entries(PAYMENT_METHODS).map(([key, label]) =>
+        `<option value="${key}"${key === method ? ' selected' : ''}>${label}</option>`).join('')}</select></label>
+    <button>Record full payment of ${money(invoice.total_cents)}</button></form></section>`;
+}
+
+export function invoicePage(invoice, { notice = '', ...payment } = {}) {
+  const rows = invoice.lines.map(line => `<tr><td>${escape(line.label)}</td>
+    <td class="amount">${money(line.cents)}</td></tr>`).join('');
+  return layout('Invoice ' + invoice.number, `
+    ${notice ? `<p role="status">${escape(notice)}</p>` : ''}
+    <p>${invoiceStatus(invoice)} · Issued ${escape(formatEastern(invoice.created_at))}${invoice.created_by ? ' by ' + escape(invoice.created_by) : ''}
+    · <a href="/invoices">All invoices</a></p>
+    <div class="grid"><section class="panel"><h2>Bill to</h2>
+    <p><a href="/customers/${invoice.customer_id}">${escape(invoice.customer_name)}</a></p>
+    <p>Service location: ${escape(invoice.site_reference)}</p></section>
+    <section class="panel"><h2>Job</h2>
+    <p><a href="/bookings/${invoice.booking_id}">${escape(invoice.title)}</a> · completed job on ${escape(invoice.service_day)}</p>
+    <p>${escape(SERVICE_LABELS[invoice.service] ?? invoice.service)} · ${invoice.square_feet} sq ft ·
+    ${invoice.bathrooms} bathrooms</p>
+    <p><a href="/quotes/${invoice.quote_id}">Accepted quote revision ${invoice.revision}</a> · ${escape(invoice.rate_version)}</p>
+    </section></div>
+    <table class="lines"><thead><tr><th>Item</th><th class="amount">Amount</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><th>Total</th><th class="amount">${money(invoice.total_cents)}</th></tr></tfoot></table>
+    ${paymentSection(invoice, payment)}`);
 }
 
 // Whole cents to the plain dollar text used in form inputs, e.g. 17 -> "0.17", 1800 -> "18.00".
@@ -262,7 +320,61 @@ function jobLabel(state) {
 function jobList(jobs) {
   return jobs.length ? `<ul>${jobs.map(job => `<li><a href="/bookings/${job.id}">${escape(job.title)}</a>
     <div class="muted">${escape(job.day)} · ${time(job.start_minute)}${job.name ? ' · ' + escape(job.name) : ''}</div>
-    <span class="tag">${jobLabel(job.job_state)}</span></li>`).join('')}</ul>` : '<p>No jobs.</p>';
+    <span class="tag">${jobLabel(job.job_state)}</span>${job.invoice_id ? ` · Invoice
+    <a href="/invoices/${job.invoice_id}">${escape(job.invoice_number)}</a> ${invoiceStatus({ status: job.invoice_status })}`
+      : ''}</li>`).join('')}</ul>` : '<p>No jobs.</p>';
+}
+
+const INVOICE_STATUS_LABELS = { unpaid: 'Unpaid', paid: 'Paid' };
+const invoiceStatus = invoice => `<span class="tag">${INVOICE_STATUS_LABELS[invoice.status] ?? 'Unknown'}</span>`;
+
+// One invoice in a list. The register and customer history use the same rows and the same link.
+function invoiceRows(invoices, { showCustomer = true } = {}) {
+  return invoices.map(invoice => `<tr>
+    <td><a href="/invoices/${invoice.id}">${escape(invoice.number)}</a></td>
+    ${showCustomer ? `<td><a href="/customers/${invoice.customer_id}">${escape(invoice.customer_name)}</a>${
+      invoice.current_customer_name !== invoice.customer_name
+        ? `<div class="muted">Now ${escape(invoice.current_customer_name)}</div>` : ''}</td>` : ''}
+    <td><a href="/bookings/${invoice.booking_id}">${escape(invoice.title)}</a></td>
+    <td>${escape(invoice.service_day)}</td>
+    <td class="amount">${money(invoice.total_cents)}</td><td>${invoiceStatus(invoice)}${invoice.paid_on
+      ? `<div class="muted">${escape(invoice.paid_on)}</div>` : ''}</td></tr>`).join('');
+}
+
+function invoiceTable(invoices, options = {}) {
+  const { showCustomer = true } = options;
+  return `<table class="lines register"><thead><tr><th>Invoice</th>${showCustomer ? '<th>Customer</th>' : ''}
+    <th>Job</th><th>Service date</th><th class="amount">Total</th><th>Status</th></tr></thead>
+    <tbody>${invoiceRows(invoices, options)}</tbody></table>`;
+}
+
+const STATUS_FILTERS = { all: 'All', unpaid: 'Unpaid', paid: 'Paid' };
+
+// The invoice register. `total` is how many invoices exist at all, so an empty result can say
+// whether nothing matched or nothing has been invoiced yet.
+export function invoicesPage(invoices, { query = '', status = 'all', total = 0 } = {}) {
+  const link = value => '/invoices?' + new URLSearchParams({ ...(query ? { q: query } : {}), status: value });
+  const filters = Object.entries(STATUS_FILTERS).map(([value, label]) => value === status
+    ? `<strong aria-current="true">${label}</strong>` : `<a href="${escape(link(value))}">${label}</a>`).join(' · ');
+  const kind = status === 'all' ? 'invoices' : status + ' invoices';
+  let results;
+  if (invoices.length) {
+    const sum = invoices.reduce((cents, invoice) => cents + invoice.total_cents, 0);
+    results = `<p role="status">${invoices.length} ${invoices.length === 1 ? kind.replace(/s$/, '') : kind}
+      · ${money(sum)}${query ? ` matching “${escape(query)}”` : ''}</p>${invoiceTable(invoices)}`;
+  } else if (!total) {
+    results = '<p role="status">No invoices yet. Open a completed booking and choose Create invoice.</p>';
+  } else {
+    results = `<p role="status">No ${kind}${query ? ` match “${escape(query)}”` : ''}.</p>
+      <p>Search by customer name or invoice number, such as INV-000001.
+      <a href="/invoices">Show all invoices</a></p>`;
+  }
+  return layout('Invoices', `<form method="get" action="/invoices">
+    <label>Customer name or invoice number <input name="q" maxlength="80" value="${escape(query)}"></label>
+    <label>Payment status <select name="status">${Object.entries(STATUS_FILTERS).map(([value, label]) =>
+      `<option value="${value}"${value === status ? ' selected' : ''}>${label}</option>`).join('')}</select></label>
+    <button>Search</button></form>
+    <p>Show: ${filters}</p>${results}`);
 }
 
 function quoteList(quotes, now) {

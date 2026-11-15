@@ -6,9 +6,13 @@ import {
 } from './pricing.js';
 
 import { expirationFor, formatEastern, isExpired } from './expiration.js';
+import {
+  billableEstimate, invoiceNumber, migrateInvoices, migratePayments, PAYMENT_METHODS, paymentFields,
+} from './invoices.js';
 import { bookingSlot, scheduleDate } from './scheduling.js';
 
 export class NotFound extends Error {}
+export const INVOICE_STATUSES = Object.freeze(['all', 'unpaid', 'paid']);
 export class Conflict extends Error {}
 
 // `now` is the clock for every timestamp the repository records and for deciding expiration.
@@ -145,6 +149,8 @@ export function openRepository(file, { now = () => new Date() } = {}) {
         ON bookings(recurring_visit_id) WHERE recurring_visit_id IS NOT NULL;
     `);
   });
+  migrateInvoices(db);
+  migratePayments(db);
 
   function transaction(action) {
     db.exec('BEGIN IMMEDIATE');
@@ -378,7 +384,111 @@ export function openRepository(file, { now = () => new Date() } = {}) {
     return { record, plan, values, assigned, visits };
   }
 
+  // Every invoice read goes through this query, so an invoice shows the same details and payment
+  // status in the register, customer history, booking page, and invoice page. An invoice is paid
+  // once it has its single, full payment.
+  const INVOICE_ROWS = `SELECT i.*, c.name AS current_customer_name,
+      CASE WHEN p.id IS NULL THEN 'unpaid' ELSE 'paid' END AS status,
+      p.amount_cents AS paid_cents, p.paid_on, p.method AS payment_method,
+      p.recorded_by AS payment_recorded_by, p.recorded_at AS payment_recorded_at
+    FROM invoices i JOIN customers c ON c.id = i.customer_id
+    LEFT JOIN invoice_payments p ON p.invoice_id = i.id`;
+
+  function invoice(id) {
+    const record = db.prepare(INVOICE_ROWS + ' WHERE i.id = ?').get(id);
+    if (!record) throw new NotFound('Invoice not found.');
+    const lines = db.prepare('SELECT label, cents FROM invoice_lines WHERE invoice_id = ? ORDER BY position').all(id);
+    return { ...record, lines };
+  }
+
+  // The invoice register. `query` matches part of an invoice number or customer name (as billed or
+  // as now named), ignoring case; "INV-1" and "1" also find INV-000001. `status` is all, unpaid, or paid.
+  function invoices({ query = '', status = 'all' } = {}) {
+    if (!INVOICE_STATUSES.includes(status)) throw new InputError('Choose all, unpaid, or paid invoices.');
+    const text = typeof query === 'string' ? query.trim().slice(0, 80).toLowerCase() : '';
+    const number = /^(?:inv-?)?0*(\d{1,9})$/.exec(text)?.[1];
+    return db.prepare(`SELECT * FROM (${INVOICE_ROWS})
+      WHERE (? = '' OR instr(lower(number), ?) > 0 OR instr(lower(customer_name), ?) > 0
+        OR instr(lower(current_customer_name), ?) > 0 OR id = ?)
+      AND (? = 'all' OR status = ?) ORDER BY id DESC`)
+      .all(text, text, text, text, number == null ? null : Number(number), status, status);
+  }
+
+  const jobStates = { scheduled: 'still scheduled', in_progress: 'still in progress', cancelled: 'cancelled' };
+
+  // Bills a completed job at the price the customer accepted. Everything is checked and written in
+  // one BEGIN IMMEDIATE transaction, and invoices.booking_id is UNIQUE, so a booking can never get a
+  // second invoice. Repeating the request returns the existing invoice instead of creating another.
+  function createInvoice(bookingId, actor) {
+    return transaction(() => {
+      const record = booking(bookingId);
+      const existing = db.prepare('SELECT id FROM invoices WHERE booking_id = ?').get(bookingId);
+      if (existing) return { id: existing.id, created: false };
+      if (record.job_state !== 'completed') {
+        throw new Conflict('Only completed jobs can be invoiced. This job is '
+          + (jobStates[record.job_state] ?? 'not completed') + '.');
+      }
+      const decision = db.prepare('SELECT * FROM decisions WHERE quote_id = ?').get(record.quote_id);
+      if (decision?.outcome !== 'accepted') throw new Conflict('This job has no accepted quote to invoice from.');
+      const revision = db.prepare('SELECT estimate FROM revisions WHERE quote_id = ? AND number = ?')
+        .get(record.quote_id, decision.revision);
+      const billed = revision && billableEstimate(revision.estimate);
+      if (!billed) {
+        throw new Conflict('The accepted quote’s saved price is incomplete, so this job cannot be invoiced.');
+      }
+      const job = db.prepare('SELECT * FROM quotes WHERE id = ?').get(record.quote_id);
+      const client = customer(job.customer_id);
+      // The location saved with the booking. Older bookings without one use the quote's location now.
+      const site = db.prepare('SELECT reference FROM booking_site_snapshots WHERE booking_id = ?').get(bookingId)
+        ?? quoteSite(job.id, job.customer_id);
+      const id = db.prepare('SELECT coalesce(max(id), 0) + 1 AS next FROM invoices').get().next;
+      db.prepare(`INSERT INTO invoices (id, number, booking_id, quote_id, revision, customer_id, customer_name,
+        site_reference, title, service_day, service, square_feet, bathrooms, rate_version, total_cents,
+        created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, invoiceNumber(id), bookingId, job.id, decision.revision, client.id, client.name,
+          site.reference, job.title, record.day, billed.scope.service, billed.scope.squareFeet,
+          billed.scope.bathrooms, billed.rateVersion, billed.totalCents, clock().toISOString(), actor ?? null);
+      const line = db.prepare('INSERT INTO invoice_lines VALUES (?, ?, ?, ?)');
+      billed.lines.forEach((item, index) => line.run(id, index + 1, item.label, item.cents));
+      return { id, created: true };
+    });
+  }
+
+  // Records the full payment of an unpaid invoice. The paid check and the insert share one
+  // BEGIN IMMEDIATE transaction and invoice_payments.invoice_id is UNIQUE, so an invoice is paid at
+  // most once, however many pages or dispatchers submit. Repeating the exact same payment (for
+  // example a double click) changes nothing; any other payment on a paid invoice is a conflict.
+  function recordPayment(invoiceId, fields, recordedBy) {
+    return transaction(() => {
+      const record = invoice(invoiceId);
+      if (record.status === 'paid') {
+        if (record.paid_on === fields.paidOn?.trim?.() && record.payment_method === fields.method
+          && record.payment_recorded_by === recordedBy) return { created: false };
+        throw new Conflict(`${record.number} is already paid: ${PAYMENT_METHODS[record.payment_method]} on `
+          + `${record.paid_on}, recorded by ${record.payment_recorded_by}. No second payment was recorded.`);
+      }
+      if (typeof recordedBy !== 'string' || !recordedBy.trim()) {
+        throw new InputError('A signed-in dispatcher must record the payment.');
+      }
+      const { paidOn, method } = paymentFields(fields, clock());
+      db.prepare(`INSERT INTO invoice_payments (invoice_id, amount_cents, paid_on, method, recorded_by, recorded_at)
+        VALUES (?, ?, ?, ?, ?, ?)`).run(invoiceId, record.total_cents, paidOn, method, recordedBy, clock().toISOString());
+      return { created: true };
+    });
+  }
+
   return {
+    invoice,
+    invoices,
+    recordPayment,
+    invoiceCount: () => db.prepare('SELECT count(*) AS count FROM invoices').get().count,
+    customerInvoices(customerId) {
+      return db.prepare(INVOICE_ROWS + ' WHERE i.customer_id = ? ORDER BY i.id DESC').all(customerId);
+    },
+    createInvoice,
+    invoiceForBooking(bookingId) {
+      return db.prepare(INVOICE_ROWS + ' WHERE i.booking_id = ?').get(bookingId);
+    },
     planForQuote,
     previewPlan,
     pausePlan(id, paused) {
@@ -514,7 +624,8 @@ export function openRepository(file, { now = () => new Date() } = {}) {
       });
     },
     customerBookings(id) {
-      return db.prepare(`SELECT b.*, q.title FROM dispatch_bookings b JOIN quotes q ON b.quote_id = q.id
+      return db.prepare(`SELECT b.*, q.title, i.id AS invoice_id, i.number AS invoice_number, i.status AS invoice_status
+        FROM dispatch_bookings b JOIN quotes q ON b.quote_id = q.id LEFT JOIN (${INVOICE_ROWS}) i ON i.booking_id = b.id
         WHERE q.customer_id = ? ORDER BY day DESC, start_minute DESC`).all(id);
     },
     listQuotes({ draftsOnly = false } = {}) {
