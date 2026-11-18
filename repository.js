@@ -1,3 +1,5 @@
+import { openPlanning } from './planning.js';
+import { CLOSEOUT_CHECKS, migrateCloseouts } from './closeouts.js';
 import { recurringSlots } from './recurrence.js';
 import { customerFields, migrateOperations, note } from './operations.js';
 import { DatabaseSync } from 'node:sqlite';
@@ -151,6 +153,8 @@ export function openRepository(file, { now = () => new Date() } = {}) {
   });
   migrateInvoices(db);
   migratePayments(db);
+  migrateCloseouts(db);
+  const planning = openPlanning(db);
 
   function transaction(action) {
     db.exec('BEGIN IMMEDIATE');
@@ -477,7 +481,77 @@ export function openRepository(file, { now = () => new Date() } = {}) {
     });
   }
 
+  function latestCloseout(id) {
+    return db.prepare('SELECT * FROM job_closeouts WHERE booking_id = ? ORDER BY id DESC LIMIT 1').get(id);
+  }
+
+  function checkCloseoutVersion(record, expected) {
+    if (record.job_state !== 'in_progress' || record.version !== expected) {
+      throw new Conflict('The job has changed. Reload it before continuing.');
+    }
+  }
+
+  function submitCloseout(id, expected, account, fields) {
+    const comments = note(fields.notes ?? '');
+    if (!Object.keys(CLOSEOUT_CHECKS).every(key => fields[key] === 'yes')) {
+      throw new InputError('Confirm all checklist items before submitting the closeout.');
+    }
+    transaction(() => {
+      const record = booking(id);
+      if (record.crew_id !== account.crew_id) throw new NotFound('Assignment not found.');
+      checkCloseoutVersion(record, expected);
+      const previous = latestCloseout(id);
+      if (previous && previous.decision !== 'returned') {
+        throw new Conflict('A closeout is already awaiting review.');
+      }
+      db.prepare('INSERT INTO job_closeouts (booking_id, submitted_by, submitted_at, notes) VALUES (?, ?, ?, ?)')
+        .run(id, account.name, clock().toISOString(), comments);
+      db.prepare('UPDATE bookings SET version = version + 1 WHERE id = ?').run(id);
+    });
+  }
+
+  function reviewCloseout(id, expected, submissionId, decision, detail, actor) {
+    if (!['approved', 'returned'].includes(decision)) throw new InputError('Choose a review decision.');
+    const comments = note(detail ?? '');
+    if (decision === 'returned' && !comments) throw new InputError('Enter a reason for sending this back.');
+    transaction(() => {
+      const record = booking(id);
+      checkCloseoutVersion(record, expected);
+      const submission = latestCloseout(id);
+      if (!submission || submission.id !== submissionId || submission.decision) {
+        throw new Conflict('This submission is no longer awaiting review.');
+      }
+      db.prepare('UPDATE job_closeouts SET decision = ?, reviewed_by = ?, reviewed_at = ?, review_notes = ? WHERE id = ?')
+        .run(decision, actor, clock().toISOString(), comments, submissionId);
+      db.prepare('UPDATE bookings SET version = version + 1 WHERE id = ?').run(id);
+      if (decision === 'approved') event(id, 'completed', comments || 'Cleaner closeout approved.');
+    });
+  }
+
+  function attentionJobs() {
+    return db.prepare(`
+      SELECT b.id, b.day, q.title,
+        CASE WHEN b.job_state = 'completed' THEN 'Invoice needed'
+             WHEN c.decision = 'returned' THEN 'Sent back to crew'
+             ELSE 'Closeout awaiting review' END AS reason
+      FROM dispatch_bookings b JOIN quotes q ON q.id = b.quote_id
+      LEFT JOIN job_closeouts c ON c.id = (SELECT id FROM job_closeouts
+        WHERE booking_id = b.id ORDER BY id DESC LIMIT 1)
+      LEFT JOIN invoices i ON i.booking_id = b.id
+      WHERE (b.job_state = 'completed' AND i.id IS NULL)
+         OR (b.job_state = 'in_progress' AND c.id IS NOT NULL)
+      ORDER BY b.day, b.start_minute, b.id
+    `).all();
+  }
+
   return {
+    planning,
+    submitCloseout,
+    reviewCloseout,
+    attentionJobs,
+    closeoutHistory(id) {
+      return db.prepare('SELECT * FROM job_closeouts WHERE booking_id = ? ORDER BY id DESC').all(id);
+    },
     invoice,
     invoices,
     recordPayment,
@@ -535,13 +609,16 @@ export function openRepository(file, { now = () => new Date() } = {}) {
     cleanerJobs(crewId, day) {
       crew(crewId);
       return db.prepare(`
-        SELECT b.id, b.version, b.start_minute, q.title, s.reference, a.acknowledged_at
+        SELECT b.id, b.version, b.start_minute, q.title, s.reference, a.acknowledged_at, b.job_state,
+          c.id AS closeout_id, c.decision, c.review_notes
         FROM dispatch_bookings b JOIN booking_crews bc ON bc.booking_id = b.id
         JOIN quotes q ON q.id = b.quote_id
         LEFT JOIN booking_site_snapshots s ON s.booking_id = b.id
         LEFT JOIN crew_acknowledgments a ON a.booking_id = b.id
           AND a.booking_version = b.version AND a.crew_id = bc.crew_id
-        WHERE b.day = ? AND bc.crew_id = ? AND b.job_state = 'scheduled'
+        LEFT JOIN job_closeouts c ON c.id = (SELECT id FROM job_closeouts
+          WHERE booking_id = b.id ORDER BY id DESC LIMIT 1)
+        WHERE b.day = ? AND bc.crew_id = ? AND b.job_state IN ('scheduled', 'in_progress', 'completed')
         ORDER BY b.start_minute, b.id`).all(scheduleDate(day), crewId);
     },
     acknowledgeJob(crewId, id, expected) {
@@ -605,6 +682,9 @@ export function openRepository(file, { now = () => new Date() } = {}) {
         const required = action === 'start' ? 'scheduled' : 'in_progress';
         if (record.job_state !== required || record.version !== expected) {
           throw new Conflict('The job has changed. Reload it before continuing.');
+        }
+        if (action === 'complete' && latestCloseout(id)) {
+          throw new Conflict('Review the submitted closeout to complete this job.');
         }
         db.prepare('UPDATE bookings SET version = version + 1 WHERE id = ?').run(id);
         event(id, action === 'start' ? 'started' : 'completed', comments);

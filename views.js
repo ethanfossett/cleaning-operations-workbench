@@ -1,3 +1,5 @@
+import { planningGroups } from './planning.js';
+import { CLOSEOUT_CHECKS } from './closeouts.js';
 import { formatEastern, isExpired } from './expiration.js';
 import { PAYMENT_METHODS } from './invoices.js';
 
@@ -16,7 +18,7 @@ export function layout(title, content, { restricted = false } = {}) {
   <link rel="stylesheet" href="/assets/app.css">
   ${restricted ? '<header><strong>AYC Operations</strong></header>' : `<header><a class="brand" href="/today">AYC Operations</a><nav aria-label="Main navigation">
     <a href="/today">Today</a><a href="/customers">Customers</a><a href="/quotes">Quotes</a><a href="/invoices">Invoices</a>
-    <a href="/schedule">Schedule</a><a href="/crews">Crews</a><a href="/cleaner">Cleaner</a><a href="/settings">Settings</a>
+    <a href="/schedule">Schedule</a><a href="/crews">Crews</a><a href="/cleaner">Cleaner</a><a href="/planning">Planning</a><a href="/settings">Settings</a>
   </nav><form method="post" action="/logout"><button>Sign out</button></form></header>`}
   <main><h1>${escape(title)}</h1>${content}</main></html>`;
 }
@@ -178,7 +180,27 @@ function invoiceSection(booking, invoice, estimate, revision) {
     <button>Create invoice</button></form></section>`;
 }
 
-export function bookingPage(booking, quote, customer, history = [], site, recovery, crews = [], acknowledgment, invoice) {
+function closeoutReview(booking, submissions, version) {
+  if (!submissions.length) return '';
+  const latest = submissions[0];
+  const form = booking.job_state === 'in_progress' && !latest.decision ? `
+    <form method="post" action="/bookings/${booking.id}/review-closeout">${version}
+      <input type="hidden" name="submissionId" value="${latest.id}">
+      <label>Review note (required when sending back)<textarea name="detail" maxlength="500"></textarea></label>
+      <button name="decision" value="approved">Approve and complete</button>
+      <button name="decision" value="returned">Send back to crew</button>
+    </form>` : '';
+  return `<section class="panel"><h2>Cleaner closeout</h2>${form}<ol>${submissions.map(item => `<li>
+    <strong>${item.decision === 'approved' ? 'Approved' : item.decision === 'returned' ? 'Sent back' : 'Submitted'}</strong>
+    · ${escape(item.submitted_by)} · ${escape(formatEastern(item.submitted_at))}
+    <p>Agreed scope, walkthrough and site security confirmed.</p>
+    ${item.notes ? `<p class="notes">${escape(item.notes)}</p>` : ''}
+    ${item.reviewed_by ? `<p>Reviewed by ${escape(item.reviewed_by)} · ${escape(formatEastern(item.reviewed_at))}</p>` : ''}
+    ${item.review_notes ? `<p class="notes">${escape(item.review_notes)}</p>` : ''}
+    </li>`).join('')}</ol></section>`;
+}
+
+export function bookingPage(booking, quote, customer, history = [], site, recovery, crews = [], acknowledgment, invoice, closeouts = []) {
   const version = `<input type="hidden" name="version" value="${booking.version}">`;
   const actions = booking.job_state === 'scheduled' ? `
     <form method="post" action="/bookings/${booking.id}/reschedule">
@@ -186,9 +208,9 @@ export function bookingPage(booking, quote, customer, history = [], site, recove
     <form method="post" action="/bookings/${booking.id}/cancel">
       ${version}<button>Cancel booking</button></form>
     <form method="post" action="/bookings/${booking.id}/start">${version}<button>Start job</button></form>`
-    : booking.job_state === 'in_progress' ? `<form method="post" action="/bookings/${booking.id}/complete">
+    : booking.job_state === 'in_progress' ? `${closeouts.length ? '' : `<form method="post" action="/bookings/${booking.id}/complete">
       ${version}<label>Completion note <textarea name="detail" maxlength="500"></textarea></label>
-      <button>Complete job</button></form>
+      <button>Complete job</button></form>`}
       <form method="post" action="/bookings/${booking.id}/interrupt">
       ${version}<label>Why did the job stop? <textarea name="detail" maxlength="500" required>${escape(recovery?.detail ?? '')}</textarea></label>
       <button>Stop without completing</button></form>` : '';
@@ -207,7 +229,7 @@ export function bookingPage(booking, quote, customer, history = [], site, recove
     <p class="muted">${site ? 'Saved at booking.' : 'Current customer details. This older job has no saved site snapshot.'}</p>
     <p class="notes">${escape((site ?? customer).access_notes || 'No access instructions.')}</p>
     <p class="notes">${escape((site ?? customer).service_notes || 'No service notes.')}</p></section></div>
-    ${bookingError(recovery)}${actions}${invoiceSection(booking, invoice, estimate, quote.decision.revision)}<h2>Job history</h2>${history.length ? `<ul>${history.map(item => `<li>
+    ${bookingError(recovery)}${actions}${closeoutReview(booking, closeouts, version)}${invoiceSection(booking, invoice, estimate, quote.decision.revision)}<h2>Job history</h2>${history.length ? `<ul>${history.map(item => `<li>
       <strong>${escape(item.kind)}</strong> · ${escape(formatEastern(item.occurred_at))}
       ${item.detail ? `<p class="notes">${escape(item.detail)}</p>` : ''}</li>`).join('')}</ul>`
       : '<p>No events recorded for this booking.</p>'}`);
@@ -389,9 +411,12 @@ export function quotesPage(quotes, now) {
     <p><a href="/customers">Find a customer to create a quote</a></p><section class="panel">${quoteList(quotes, now)}</section>`);
 }
 
-export function todayPage(day, jobs, overdue, quotes, now) {
+export function todayPage(day, jobs, overdue, quotes, now, attention = []) {
   return layout('Today', `<p class="muted">${escape(day)} · Eastern time</p>
     <p><a href="/customers">Find a customer</a> · <a href="/schedule?day=${day}">Open schedule</a></p>
+    <section class="panel"><h2>Needs attention</h2>
+    ${attention.length ? `<ul>${attention.map(job => `<li><a href="/bookings/${job.id}">${escape(job.title)}</a>
+      · ${escape(job.day)} · ${escape(job.reason)}</li>`).join('')}</ul>` : '<p>No closeouts or invoices need attention.</p>'}</section>
     <div class="grid"><section class="panel"><h2>Today’s jobs</h2>${jobList(jobs)}</section>
     <section class="panel"><h2>Unfinished earlier jobs</h2>${jobList(overdue)}</section>
     <section class="panel"><h2>Quotes needing a decision</h2>${quoteList(quotes, now)}</section></div>`);
@@ -409,7 +434,24 @@ export function crewsPage(crews, error) {
       <button>Add crew</button></form>`);
 }
 
-export function cleanerPage(crews, crewId, day, jobs, restricted = false) {
+function cleanerCloseout(job, day, recovery) {
+  if (job.decision === 'approved') return '<p class="tag">Closeout approved</p>';
+  if (job.job_state === 'completed') return '<p class="tag">Completed</p>';
+  if (job.closeout_id && !job.decision) return '<p class="tag">Awaiting dispatcher review</p>';
+  return `${job.decision === 'returned' ? `<p>Sent back: ${escape(job.review_notes)}</p>` : ''}
+    <form method="post" action="/cleaner/closeout">
+      <input type="hidden" name="bookingId" value="${job.id}">
+      <input type="hidden" name="version" value="${job.version}">
+      <input type="hidden" name="day" value="${escape(day)}">
+      <fieldset><legend>Closeout checklist</legend>
+      ${Object.entries(CLOSEOUT_CHECKS).map(([key, label]) => `<label><input type="checkbox" name="${key}" value="yes"
+        ${recovery?.checks[key] === 'yes' ? 'checked' : ''} required> ${escape(label)}</label>`).join('')}</fieldset>
+      <label>Notes for dispatch<textarea name="notes" maxlength="500">${escape(recovery?.notes ?? '')}</textarea></label>
+      <button>Submit closeout</button>
+    </form>`;
+}
+
+export function cleanerPage(crews, crewId, day, jobs, restricted = false, error, recovery) {
   return layout('Cleaner workspace', `<p class="muted">${restricted ? 'Assigned crew' : 'Local crew preview'} · Eastern time</p>
     <form method="get" action="/cleaner">
       ${restricted ? '' : `<label>Crew <select name="crew">${crews.map(crew =>
@@ -417,14 +459,15 @@ export function cleanerPage(crews, crewId, day, jobs, restricted = false) {
       <label>Day <input type="date" name="day" value="${escape(day)}" required></label>
       <button>Show jobs</button>
     </form>
+    ${error ? bookingError({ message: error }) : ''}
     ${jobs.length ? jobs.map(job => `<article><h2>${escape(job.title)}</h2>
       <p>${time(job.start_minute)} · ${escape(job.reference ?? 'No saved site reference')}</p>
-      ${job.acknowledged_at ? '<p class="tag">Acknowledged</p>' : `
+      ${job.job_state !== 'scheduled' ? (restricted ? cleanerCloseout(job, day, recovery?.id === job.id ? recovery : undefined) : `<p>${jobLabel(job.job_state)}</p>`) : job.acknowledged_at ? '<p class="tag">Acknowledged</p>' : `
       <form method="post" action="/cleaner/acknowledge">
         <input type="hidden" name="crewId" value="${crewId}">
         <input type="hidden" name="bookingId" value="${job.id}">
         <input type="hidden" name="version" value="${job.version}">
-        <button>Acknowledge job</button></form>`}</article>`).join('') : '<p>No scheduled jobs for this crew.</p>'}
+        <button>Acknowledge job</button></form>`}</article>`).join('') : '<p>No jobs for this crew on this day.</p>'}
     ${restricted ? '<form method="post" action="/logout"><button>Sign out</button></form>' : ''}`, { restricted });
 }
 
@@ -455,4 +498,38 @@ export function recurringPage(quote, crews, preview, fields) {
     </form>` : ''}
     ${plan ? `<form method="post" action="${path}"><button name="action" value="${plan.paused ? 'resume' : 'pause'}">
       ${plan.paused ? 'Resume plan' : 'Pause plan'}</button></form>` : ''}`);
+}
+
+export function planningPage(scenarios, { editing, id, action, fields, error }) {
+  const editor = editing ? `
+    <form method="post" action="${action}">
+      <h2>${id ? 'Edit scenario' : 'New scenario'}</h2>
+      <label>Scenario name <input name="name" value="${escape(fields.name ?? '')}" required maxlength="80"></label>
+      <div class="grid planning-fields">${planningGroups.map(group => `<fieldset>
+        <legend>${escape(group.title)}</legend>
+        ${group.fields.map(field => `<label>${escape(field.label)} <input type="number" name="${field.key}"
+          min="${field.money ? 0 : field.min}" ${field.money ? 'step="0.01"' : `max="${field.max}" step="1"`}
+          value="${escape(fields[field.key] ?? '')}" required></label>`).join('')}
+      </fieldset>`).join('')}</div>
+      <p><button>Save scenario</button> · <a href="/planning">Back to scenarios</a></p>
+    </form>` : '';
+  return layout('Growth planning', `<p>Save assumptions for a cleaning business growth plan. Planning scenarios are separate from customer and job records.</p>
+    ${error ? bookingError({ message: error }) : ''}
+    <section class="panel">
+      <h2>Scenarios</h2>
+      ${scenarios.length ? `<ul>${scenarios.map(scenario => `<li>
+        <a href="/planning/${scenario.id}" ${scenario.id === id ? 'aria-current="page"' : ''}>${escape(scenario.name)}</a>
+        · ${scenario.monthlyLeads} leads per month
+      </li>`).join('')}</ul>` : '<p>No scenarios saved yet.</p>'}
+      <a href="/planning/new">New scenario</a>
+    </section>
+    ${editor}
+    <details class="panel"><summary>Example: first-clean contribution</summary>
+      <p>With 20 leads at $15 each and 25% booking a first clean, you expect five first cleans.
+      At $206 per clean, that gives $1,030 in revenue. Three person-hours at $24 an hour
+      plus $12 in supplies costs $84 per clean, or $420 total. After $300 in lead costs,
+      $310 remains before recurring work and other business expenses.</p>
+      <p>A two-person crew working two hours uses four person-hours. A repeat visit happens
+      after the first clean and has its own price, time and supplies assumptions.</p>
+    </details>`);
 }

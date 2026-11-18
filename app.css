@@ -23,3 +23,6 @@ li{margin:.55rem 0}.tag{display:inline-block;background:#e3f0eb;padding:.16rem .
 .lines th,.lines td{border:1px solid var(--border);padding:.5rem .75rem;text-align:left}
 .lines .amount{text-align:right}
 .register{width:100%}
+.planning-fields fieldset{min-width:0;border:1px solid var(--border);border-radius:.5rem;margin:0}
+.planning-fields legend{font-weight:700}
+.planning-fields input{display:block;width:100%;margin-top:.25rem}

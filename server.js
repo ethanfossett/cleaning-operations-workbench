@@ -1,3 +1,4 @@
+import { planningFormValues, readPlanningForm } from './planning.js';
 import { openStaff, sampleAccounts } from './staff.js';
 import { createServer } from 'node:http';
 import { mkdirSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -9,7 +10,7 @@ import { seedDemo } from './demo.js';
 import { dollarsToCents, InputError, rateVersion } from './pricing.js';
 import { Conflict, NotFound, openRepository } from './repository.js';
 import {
-  bookingPage, recurringPage, cleanerPage, crewsPage, customerPage, directory, invoicePage, invoicesPage, layout, quotePage, rateFormValues,
+  bookingPage, planningPage, recurringPage, cleanerPage, crewsPage, customerPage, directory, invoicePage, invoicesPage, layout, quotePage, rateFormValues,
   ratesPage, schedulePage,
   quotesPage, settingsPage, todayPage, SERVICE_LABELS,
 } from './views.js';
@@ -60,7 +61,10 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
   const repository = openRepository(file, { now });
   const clock = now ?? (() => new Date());
   const easternDay = date => new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/New_York' }).format(date);
-  if (demo) seedDemo(repository, easternDay(clock()));
+  if (demo) {
+    seedDemo(repository, easternDay(clock()));
+    repository.planning.seedDemo();
+  }
   if (demo && staffFile) repository.addCrew({ name: 'Demo crew B' });
   const staff = staffFile ? openStaff(staffFile, accounts) : null;
   const server = createServer(async (request, response) => {
@@ -81,7 +85,7 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
       const quote = repository.quote(record.quote_id);
       return html(status, bookingPage(record, quote, repository.customer(quote.customer_id),
         repository.history(id), repository.bookingSite(id), recovery, repository.crews(), repository.acknowledgment(record),
-        repository.invoiceForBooking(id)));
+        repository.invoiceForBooking(id), repository.closeoutHistory(id)));
     };
     const showInvoice = (id, status = 200, options = {}) => html(status,
       invoicePage(repository.invoice(id), { today: easternDay(clock()), ...options }));
@@ -114,15 +118,42 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
         }
         if (account.role === 'cleaner' && !(
           (request.method === 'GET' && path === '/cleaner') ||
-          (request.method === 'POST' && path === '/cleaner/acknowledge'))) {
+          (request.method === 'POST' && ['/cleaner/acknowledge', '/cleaner/closeout'].includes(path)))) {
           return html(403, layout('Forbidden', '<p>This page requires dispatcher access.</p>', { restricted: true }));
         }
       }
+      const scenarioPath = /^\/planning(?:\/(new|[1-9]\d{0,14}))?$/.exec(path);
       const customer = /^\/customers\/(\d+)(?:\/(quotes|edit))?$/.exec(path);
       const quote = /^\/quotes\/(\d+)(?:\/(revise|decision|book))?$/.exec(path);
       const recurring = /^\/quotes\/(\d+)\/recurring$/.exec(path);
-      const booking = /^\/bookings\/(\d+)(?:\/(reschedule|cancel|start|complete|interrupt|invoice))?$/.exec(path);
+      const booking = /^\/bookings\/(\d+)(?:\/(reschedule|cancel|start|complete|interrupt|invoice|review-closeout))?$/.exec(path);
       const invoice = /^\/invoices\/(\d+)(?:\/(payment))?$/.exec(path);
+      if (scenarioPath) {
+        const selected = scenarioPath[1];
+        const id = selected && selected !== 'new' ? Number(selected) : undefined;
+        const scenario = id === undefined ? undefined : repository.planning.find(id);
+        if (id !== undefined && !scenario) throw new NotFound('Planning scenario not found.');
+        const editing = Boolean(selected);
+        const action = id === undefined ? '/planning/new' : '/planning/' + id;
+        const render = (status, fields, error) => html(status, planningPage(repository.planning.list(), {
+          editing, id, action, fields, error,
+        }));
+        if (request.method === 'GET') {
+          return render(200, planningFormValues(scenario));
+        }
+        if (request.method === 'POST' && editing) {
+          const fields = await form(request);
+          let saved;
+          try {
+            saved = repository.planning.save(readPlanningForm(fields), id);
+          } catch (error) {
+            if (!(error instanceof InputError)) throw error;
+            return render(400, fields, error.message);
+          }
+          if (saved === undefined) throw new NotFound('Planning scenario not found.');
+          return redirect('/planning/' + saved);
+        }
+      }
       if (request.method === 'GET') {
         if (path === '/assets/app.css') {
           return response.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' }).end(stylesheet);
@@ -137,7 +168,7 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
         }
         if (path === '/today') {
           return html(200, todayPage(today, repository.schedule(today), repository.overdueJobs(today),
-            repository.listQuotes({ draftsOnly: true }), time));
+            repository.listQuotes({ draftsOnly: true }), time, repository.attentionJobs()));
         }
         if (recurring) {
           const id = Number(recurring[1]);
@@ -256,6 +287,22 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
           }
           return redirect('/quotes/' + id + '/recurring');
         }
+        if (path === '/cleaner/closeout') {
+          if (account?.role !== 'cleaner') return html(403, layout('Cleaner access required', ''));
+          const fields = await form(request);
+          const id = Number(fields.bookingId);
+          const day = scheduleDate(fields.day);
+          try {
+            repository.submitCloseout(id, Number(fields.version), account, fields);
+          } catch (error) {
+            if (!(error instanceof InputError || error instanceof Conflict)) throw error;
+            const jobs = repository.cleanerJobs(account.crew_id, day);
+            return html(statusOf(error), cleanerPage([], account.crew_id, day, jobs, true, error.message, {
+              id, notes: fields.notes, checks: fields,
+            }));
+          }
+          return redirect('/cleaner?' + new URLSearchParams({ day }));
+        }
         if (path === '/cleaner/acknowledge') {
           const fields = await form(request);
           const crewId = account?.crew_id ?? Number(fields.crewId);
@@ -320,6 +367,9 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
           try {
             if (action === 'start' || action === 'complete') {
               repository.advanceJob(id, version, action, fields.detail ?? '');
+            } else if (action === 'review-closeout') {
+              if (account?.role !== 'dispatcher') return html(403, layout('Dispatcher access required', ''));
+              repository.reviewCloseout(id, version, Number(fields.submissionId), fields.decision, fields.detail, account.name);
             } else if (action === 'interrupt') {
               repository.interruptJob(id, version, fields.detail ?? '');
             } else {

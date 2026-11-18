@@ -54,6 +54,50 @@ when booked. Edits to a customer affect future bookings. Older bookings
 without a snapshot display current customer details with a clear label. Stale reschedule and cancel requests return
 a conflict. The app assumes a trusted local operator and uses sample data.
 
+## Growth planning
+
+Open **Planning** as a dispatcher to create or edit a scenario. Demo mode
+starts with two fictional scenarios. In ordinary mode, saved scenarios
+persist in the same local database as the app, in a separate planning table.
+
+Enter acquisition and conversion assumptions, expected recurring retention,
+visit frequency, prices, labor time, supplies, and available person-hours.
+The page includes a worked first-clean example. Initial prices use the
+bundled sample quote rates. Editing a scenario affects that scenario only.
+
+## Cleaner closeout and dispatcher review
+
+Dispatch starts a scheduled booking. In **Cleaner workspace**, the assigned
+cleaner selects the booking date, confirms the three closeout checklist items,
+and can leave notes for dispatch. The submission stays with that booking.
+
+**Today → Needs attention** lists closeouts waiting for review, closeouts sent
+back to the crew, and completed jobs that still need an invoice. Open the job in
+that list to read the checklist confirmation and notes. **Send back to crew**
+requires a reason, which the cleaner sees before submitting again. **Approve
+and complete** completes the booking and enables **Create invoice**. The booking
+retains all submissions and the reviewer, time and notes for each decision.
+Creating the invoice clears that item from the list.
+
+Dispatch can still complete a job directly before a cleaner submits a closeout.
+After submission, dispatch completes it through approval. Dispatch can still stop
+unfinished jobs using the existing stop action.
+
+To try the workflow in demo mode:
+
+1. Sign in as the demo dispatcher. Open **Customers → Sample Apartment Turnover**
+   and find the **Move-out cleaning** booking dated May 6, 2030. Open the
+   booking and select **Start job**.
+2. Sign out. Sign in as the first demo cleaner and show jobs for May 6, 2030.
+   Fill the checklist, enter a fictional note, and select **Submit closeout**.
+3. Sign in as the dispatcher again. Open the job from **Today → Needs attention**.
+   Send it back with a fictional reason, or approve it to complete the job.
+4. If returned, sign in as the same cleaner, open the same day, and resubmit.
+   After dispatch approves, create the invoice and check that the job leaves
+   **Needs attention**.
+
+Run `node --test closeouts.test.js` for the end-to-end HTTP checks.
+
 ## Invoicing completed jobs
 
 Open a completed booking and click **Create invoice** in the **Invoice** panel. The invoice copies the
