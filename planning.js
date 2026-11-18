@@ -75,8 +75,21 @@ export function readPlanningForm(fields) {
   return scenario;
 }
 
+export const forecastLengths = Object.freeze([6, 12]);
+
+export function readForecastLength(value) {
+  if (!forecastLengths.some(months => String(months) === value)) {
+    throw new InputError('Choose a forecast length of 6 or 12 months.');
+  }
+  return Number(value);
+}
+
 export function openPlanning(db) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS planning_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      forecast_months INTEGER NOT NULL CHECK (forecast_months IN (6, 12))
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS planning_scenarios (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -93,6 +106,14 @@ export function openPlanning(db) {
   }
 
   return {
+    forecastMonths() {
+      return db.prepare('SELECT forecast_months FROM planning_settings WHERE id = 1').get()?.forecast_months
+        ?? forecastLengths[0];
+    },
+    setForecastMonths(months) {
+      db.prepare(`INSERT INTO planning_settings (id, forecast_months) VALUES (1, ?)
+        ON CONFLICT(id) DO UPDATE SET forecast_months = excluded.forecast_months`).run(months);
+    },
     list: () => rows.all().map(unpack),
     find: id => unpack(byId.get(id)),
     save(scenario, id) {

@@ -1,4 +1,4 @@
-import { planningFormValues, readPlanningForm } from './planning.js';
+import { planningFormValues, readForecastLength, readPlanningForm } from './planning.js';
 import { openStaff, sampleAccounts } from './staff.js';
 import { createServer } from 'node:http';
 import { mkdirSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -128,6 +128,11 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
       const recurring = /^\/quotes\/(\d+)\/recurring$/.exec(path);
       const booking = /^\/bookings\/(\d+)(?:\/(reschedule|cancel|start|complete|interrupt|invoice|review-closeout))?$/.exec(path);
       const invoice = /^\/invoices\/(\d+)(?:\/(payment))?$/.exec(path);
+      if (path === '/planning/forecast-length' && request.method === 'POST') {
+        const fields = await form(request);
+        repository.planning.setForecastMonths(readForecastLength(fields.months));
+        return redirect('/planning');
+      }
       if (scenarioPath) {
         const selected = scenarioPath[1];
         const id = selected && selected !== 'new' ? Number(selected) : undefined;
@@ -136,7 +141,7 @@ export function app(file, { demo = false, now, staffFile, accounts = [] } = {}) 
         const editing = Boolean(selected);
         const action = id === undefined ? '/planning/new' : '/planning/' + id;
         const render = (status, fields, error) => html(status, planningPage(repository.planning.list(), {
-          editing, id, action, fields, error,
+          editing, id, action, fields, error, forecastMonths: repository.planning.forecastMonths(),
         }));
         if (request.method === 'GET') {
           return render(200, planningFormValues(scenario));

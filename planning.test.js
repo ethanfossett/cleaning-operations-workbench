@@ -36,6 +36,14 @@ test('dispatcher saves independent planning assumptions and reopens them after r
     const cleaner = await login(1);
     const initialCustomers = await (await send('/customers', dispatch)).text();
     const initial = await (await send('/planning', dispatch)).text();
+    assert.match(initial, /value="6" selected>6 months/);
+    assert.equal((await send('/planning/forecast-length', cleaner, { months: '12' })).status, 403);
+    assert.equal((await send('/planning/forecast-length', dispatch, { months: '9' })).status, 400);
+    assert.match(await (await send('/planning', dispatch)).text(), /value="6" selected>6 months/);
+    assert.equal((await send('/planning/forecast-length', dispatch, { months: '12' })).status, 303);
+    for (const id of [1, 2]) {
+      assert.match(await (await send('/planning/' + id, dispatch)).text(), /value="12" selected>12 months/);
+    }
     assert.match(initial, /Sample baseline[\s\S]*Sample higher lead volume/);
     assert.equal((await send('/planning')).headers.get('location'), '/login');
     assert.equal((await send('/planning', cleaner)).status, 403);
@@ -54,6 +62,7 @@ test('dispatcher saves independent planning assumptions and reopens them after r
     await stop();
     await start(false);
     const reopened = await (await send(path, await login(0))).text();
+    assert.match(reopened, /value="12" selected>12 months/);
     assert.match(reopened, /Sample &lt; growth/);
     assert.match(reopened, /name="monthlyLeads"[\s\S]*?value="31"/);
     assert.match(reopened, /name="leadCostCents"[\s\S]*?value="12.35"/);

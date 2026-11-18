@@ -62,6 +62,8 @@ persist in the same local database as the app, in a separate planning table.
 
 Enter acquisition and conversion assumptions, expected recurring retention,
 visit frequency, prices, labor time, supplies, and available person-hours.
+The shared forecast length defaults to six months and can be set to twelve
+months from the Planning page.
 The page includes a worked first-clean example. Initial prices use the
 bundled sample quote rates. Editing a scenario affects that scenario only.
 

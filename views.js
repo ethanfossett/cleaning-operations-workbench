@@ -1,4 +1,4 @@
-import { planningGroups } from './planning.js';
+import { forecastLengths, planningGroups } from './planning.js';
 import { CLOSEOUT_CHECKS } from './closeouts.js';
 import { formatEastern, isExpired } from './expiration.js';
 import { PAYMENT_METHODS } from './invoices.js';
@@ -500,7 +500,7 @@ export function recurringPage(quote, crews, preview, fields) {
       ${plan.paused ? 'Resume plan' : 'Pause plan'}</button></form>` : ''}`);
 }
 
-export function planningPage(scenarios, { editing, id, action, fields, error }) {
+export function planningPage(scenarios, { editing, id, action, fields, error, forecastMonths }) {
   const editor = editing ? `
     <form method="post" action="${action}">
       <h2>${id ? 'Edit scenario' : 'New scenario'}</h2>
@@ -515,6 +515,14 @@ export function planningPage(scenarios, { editing, id, action, fields, error }) 
     </form>` : '';
   return layout('Growth planning', `<p>Save assumptions for a cleaning business growth plan. Planning scenarios are separate from customer and job records.</p>
     ${error ? bookingError({ message: error }) : ''}
+    <form method="post" action="/planning/forecast-length">
+      <label for="forecast-months">Forecast length</label>
+      <select id="forecast-months" name="months" aria-describedby="forecast-length-help">
+        ${forecastLengths.map(months => `<option value="${months}"${months === forecastMonths ? ' selected' : ''}>${months} months</option>`).join('')}
+      </select>
+      <button>Save forecast length</button>
+      <p id="forecast-length-help" class="muted">This setting applies to all planning scenarios.</p>
+    </form>
     <section class="panel">
       <h2>Scenarios</h2>
       ${scenarios.length ? `<ul>${scenarios.map(scenario => `<li>
