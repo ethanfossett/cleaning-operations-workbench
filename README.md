@@ -1,14 +1,16 @@
 # Cleaning Operations Workbench
 
-An open-source JavaScript and SQLite app for managing cleaning quotes, bookings,
-crew schedules, job closeout, invoicing, and growth planning. Dispatchers can
+An open-source cleaning business operations platform built with JavaScript and
+SQLite. It supports quotes, bookings, crew schedules, job closeout, invoicing,
+and growth planning. Dispatchers can
 revise itemized quotes, convert accepted quotes into bookings, and follow jobs
 from assignment through completion and invoicing.
 
 ## Project origin
 
-The app was inspired by workflows from All Your Cleaning, an existing cleaning
-business. This repository contains a separate implementation of those ideas.
+This project implements cleaning operations workflows in a standalone codebase.
+Some of those workflows originated in All Your Cleaning, an existing cleaning
+business with a separate WordPress system.
 It uses fictional demo records and illustrative prices, with no WordPress
 source, production records, live credentials, or third-party assets.
 The source is available under the [MIT License](LICENSE).
