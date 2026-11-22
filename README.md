@@ -6,13 +6,9 @@ and growth planning. Dispatchers can
 revise itemized quotes, convert accepted quotes into bookings, and follow jobs
 from assignment through completion and invoicing.
 
-## Project origin
+## Demo data and license
 
-This project implements cleaning operations workflows in a standalone codebase.
-Some of those workflows originated in All Your Cleaning, an existing cleaning
-business with a separate WordPress system.
-It uses fictional demo records and illustrative prices, with no WordPress
-source, production records, live credentials, or third-party assets.
+This standalone project uses fictional demo records and illustrative prices.
 The source is available under the [MIT License](LICENSE).
 
 ## Run locally
