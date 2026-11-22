@@ -1,8 +1,17 @@
-# AYC Operations
+# Cleaning Operations Workbench
 
-A standalone operations workspace for a cleaning business. An operator can find or create a customer, build an itemized quote, revise its scope, and record a decision against the exact revision the customer saw. Accepted quotes can become bookings, with a daily schedule and controls to reschedule or cancel.
+An open-source JavaScript and SQLite app for managing cleaning quotes, bookings,
+crew schedules, job closeout, invoicing, and growth planning. Dispatchers can
+revise itemized quotes, convert accepted quotes into bookings, and follow jobs
+from assignment through completion and invoicing.
 
-This is a new JavaScript implementation of selected All Your Cleaning workflows. Pricing is illustrative. The archive contains fresh application code and uses no WordPress code, production records, live credentials, or third-party assets. The MIT license applies to this implementation.
+## Project origin
+
+The app was inspired by workflows from All Your Cleaning, an existing cleaning
+business. This repository contains a separate implementation of those ideas.
+It uses fictional demo records and illustrative prices, with no WordPress
+source, production records, live credentials, or third-party assets.
+The source is available under the [MIT License](LICENSE).
 
 ## Run locally
 
